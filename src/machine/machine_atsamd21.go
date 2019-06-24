@@ -1179,8 +1179,7 @@ func (usbcdc USBCDC) WriteByte(c byte) error {
 		usbEndpointDescriptors[usb_CDC_ENDPOINT_IN].DeviceDescBank[1].PCKSIZE.ClearBits(usb_DEVICE_PCKSIZE_MULTI_PACKET_SIZE_Mask << usb_DEVICE_PCKSIZE_MULTI_PACKET_SIZE_Pos)
 
 		// set count of bytes to be sent
-		usbEndpointDescriptors[usb_CDC_ENDPOINT_IN].DeviceDescBank[1].PCKSIZE.SetBits((1&usb_DEVICE_PCKSIZE_BYTE_COUNT_Mask)<<usb_DEVICE_PCKSIZE_BYTE_COUNT_Pos |
-			(epPacketSize(64) << usb_DEVICE_PCKSIZE_SIZE_Pos))
+		usbEndpointDescriptors[usb_CDC_ENDPOINT_IN].DeviceDescBank[1].PCKSIZE.SetBits((1 & usb_DEVICE_PCKSIZE_BYTE_COUNT_Mask) << usb_DEVICE_PCKSIZE_BYTE_COUNT_Pos)
 
 		// clear transfer complete flag
 		setEPINTFLAG(usb_CDC_ENDPOINT_IN, sam.USB_DEVICE_EPINTFLAG_TRCPT1)
@@ -1189,7 +1188,12 @@ func (usbcdc USBCDC) WriteByte(c byte) error {
 		setEPSTATUSSET(usb_CDC_ENDPOINT_IN, sam.USB_DEVICE_EPSTATUSSET_BK1RDY)
 
 		// wait for transfer to complete
+		timeout := 3000
 		for (getEPINTFLAG(usb_CDC_ENDPOINT_IN) & sam.USB_DEVICE_EPINTFLAG_TRCPT1) == 0 {
+			timeout--
+			if timeout == 0 {
+				return errors.New("USBCDC write byte timeout")
+			}
 		}
 	}
 
@@ -1381,16 +1385,24 @@ func handleUSB() {
 		}
 	}
 
-	// Now the actual transfer handlers, ignore endpoints number 0 and 1 (setup)
+	// Now the actual transfer handlers, ignore endpoint number 0 (setup)
 	var i uint32
-	for i = 2; i < uint32(len(endPoints)); i++ {
+	for i = 1; i < uint32(len(endPoints)); i++ {
 		// Check if endpoint has a pending interrupt
 		epFlags := getEPINTFLAG(i)
 		if epFlags > 0 {
-			// Endpoint Transfer Complete Interrupt
-			if (epFlags & sam.USB_DEVICE_EPINTFLAG_TRCPT0) > 0 {
-				handleEndpoint(i)
+			switch i {
+			case usb_CDC_ENDPOINT_OUT:
+				if (epFlags & sam.USB_DEVICE_EPINTFLAG_TRCPT0) > 0 {
+					handleEndpoint(i)
+				}
 				setEPINTFLAG(i, epFlags)
+			case usb_CDC_ENDPOINT_IN, usb_CDC_ENDPOINT_ACM:
+				// set bank ready
+				setEPSTATUSCLR(i, sam.USB_DEVICE_EPSTATUSCLR_BK1RDY)
+
+				// ack transfer complete
+				setEPINTFLAG(i, sam.USB_DEVICE_EPINTFLAG_TRCPT1)
 			}
 		}
 	}
@@ -1521,7 +1533,12 @@ func handleStandardSetup(setup usbSetup) bool {
 		setEPSTATUSSET(0, sam.USB_DEVICE_EPSTATUSSET_BK1RDY)
 
 		// wait for transfer to complete
+		timeout := 3000
 		for (getEPINTFLAG(0) & sam.USB_DEVICE_EPINTFLAG_TRCPT1) == 0 {
+			timeout--
+			if timeout == 0 {
+				return true
+			}
 		}
 
 		// last, set the device address to that requested by host
@@ -1665,11 +1682,21 @@ func armRecvCtrlOUT(ep uint32) uint32 {
 	setEPSTATUSCLR(ep, sam.USB_DEVICE_EPSTATUSCLR_BK0RDY)
 
 	// Wait until OUT transfer is ready.
+	timeout := 3000
 	for (getEPSTATUS(ep) & sam.USB_DEVICE_EPSTATUS_BK0RDY) == 0 {
+		timeout--
+		if timeout == 0 {
+			return 0
+		}
 	}
 
 	// Wait until OUT transfer is completed.
+	timeout = 3000
 	for (getEPINTFLAG(ep) & sam.USB_DEVICE_EPINTFLAG_TRCPT0) == 0 {
+		timeout--
+		if timeout == 0 {
+			return 0
+		}
 	}
 
 	// return number of bytes received
